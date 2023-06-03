@@ -160,4 +160,4 @@ cython_debug/
 #.idea/
 
 # api keys etc
-secrets*
+api_codes*
