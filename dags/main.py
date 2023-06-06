@@ -55,11 +55,11 @@ def pipeline():
         # If this takes more than 10 seconds an exception will be risen.
         with webdriver.Remote(f'{remote_webdriver}:4444/wd/hub', options=options) as driver:
             driver.get(url)
-            username_input = WebDriverWait(driver, 10).until(
+            username_input = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.ID, "login-username"))
             )
 
-            password_input = WebDriverWait(driver, 10).until(
+            password_input = WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.ID, "login-password"))
             )
 
@@ -70,7 +70,7 @@ def pipeline():
 
             # The browser waits until the the url contains the specified string, if this takes more than 10 seconds an exception will be risen.
             # Port needs to be the same as set in the spotify app. 
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 20).until(
                 EC.url_contains("localhost:7032/callback")
             )
             
@@ -124,10 +124,62 @@ def pipeline():
         respo = user_tracks_response.json()
 
         return respo
+    
+    @task
+    def json_to_pandas(json_data):
+         # The purpose of this function is to extract the wanted information to a pandas dataframe.
+
+        song_dict = {
+            "played_at": [],
+            "artist" : [],
+            "track" : [],
+            "track_len_s": [],
+            "album": [],
+            "album_release_date": [],
+            "album_total_tracks": []
+        }
+
+        for song_data in json_data["items"]:
+            played_at = datetime.strptime(song_data["played_at"],"%Y-%m-%dT%H:%M:%S.%fZ")
+            artist = song_data["track"]["artists"][0]["name"]
+            track = song_data["track"]["name"]
+            track_len_s = round((song_data["track"]["duration_ms"] / 1000), 2)
+            album = song_data["track"]["album"]["name"]
+            album_release = song_data["track"]["album"]["release_date"]
+            album_total_tracks = song_data["track"]["album"]["total_tracks"]
+
+            song_dict["played_at"].append(played_at)
+            song_dict["artist"].append(artist)
+            song_dict["track"].append(track)
+            song_dict["track_len_s"].append(track_len_s)
+            song_dict["album"].append(album)
+            song_dict["album_release_date"].append(album_release)
+            song_dict["album_total_tracks"].append(album_total_tracks)
+
+        df = pd.DataFrame.from_dict(song_dict)
+
+        return df
+
+    @task(multiple_outputs = True)
+    def split_pandas_df(pandas_df):
+         # The purpose of this function is to split the single pandas dataframe to 2 dataframes. One for song data and one for album data.
+
+        df_songs = pandas_df[["played_at", "artist", "track", "track_len_s"]]
+        df_albums = pandas_df[["album", "album_release_date", "album_total_tracks"]]
+
+        # assigning the created tables to a dictionary to they can be accessed using the key.
+        data_dict = {
+            "song_data": df_songs,
+            "album_data": df_albums
+        }
+        
+        return data_dict
 
     task1 = launch_browser_to_get_code()
     task2 = get_token(code = task1)
     task3 = get_history(token = task2)
+    task4 = json_to_pandas(json_data = task3)
+    task5 = split_pandas_df(pandas_df = task4)
 
 
 pipeline()
