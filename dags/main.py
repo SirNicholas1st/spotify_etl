@@ -3,18 +3,17 @@ from airflow.decorators import dag, task
 from airflow.operators.python import PythonOperator
 from airflow.contrib.operators.snowflake_operator import SnowflakeOperator
 from airflow.contrib.hooks.snowflake_hook import SnowflakeHook
+from sqlalchemy import create_engine
 import requests
 from urllib.parse import urlencode
 import base64
 import pandas as pd
 from api_codes import clientID, secret, spotify_username, spotify_password
-import time
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
 
 default_args = {
     "owner": "SirNicholas1st",
@@ -30,6 +29,8 @@ default_args = {
     catchup = False
 )
 def pipeline():
+
+    # First we define python operator tasks.
 
     @task
     def launch_browser_to_get_code():
@@ -162,25 +163,72 @@ def pipeline():
 
     @task(multiple_outputs = True)
     def split_pandas_df(pandas_df):
-         # The purpose of this function is to split the single pandas dataframe to 2 dataframes. One for song data and one for album data.
+         # The purpose of this function is to split the single pandas dataframe to 3 dataframes. One for song data, one for album data, and one for artist data.
 
         df_songs = pandas_df[["played_at", "artist", "track", "track_len_s"]]
         df_albums = pandas_df[["album", "album_release_date", "album_total_tracks"]]
+        df_artists = pandas_df[["artist"]]
 
         # assigning the created tables to a dictionary to they can be accessed using the key.
         data_dict = {
             "song_data": df_songs,
-            "album_data": df_albums
+            "album_data": df_albums,
+            "artist_data": df_artists
         }
         
         return data_dict
+    
+    @task
+    def artist_data_to_snowflake(artist_data_df):
+        # This functions adds the artist data to the snowflake table if they dont already exist there.
+        # create a engine which carries out the sql statements.
+        snowflake_hook = SnowflakeHook(snowflake_conn_id = "snowflake_default")
+        connection = snowflake_hook.get_uri()
+        engine = create_engine(connection)
+
+        # iterate over the data in the artist table.
+        for i, r in artist_data_df.iterrows():
+            # check if the artist in question is already in the table. We dont want duplicates.
+            artist = r["artist"]
+            select_query = f"SELECT artist_id FROM artist_table WHERE artist = '{artist}'"
+            result = engine.execute(select_query)
+            rows = result.fetchall()
+
+            # if the rows variable is empty, in other words the artist isnt in the table, we will insert the value.
+            if not rows:
+                insert_query = f"INSERT INTO artist_table (artist) VALUES ('{artist}')"
+                engine.execute(insert_query)
+
+        return None
+
+    # Actual tasks start from this point.
+
+    task01 = SnowflakeOperator(
+         task_id = "create_artist_table",
+         sql = "sql/create_artist_table.sql",
+         snowflake_conn_id = "snowflake_default"
+    )
+
+    task02 = SnowflakeOperator(
+         task_id = "create_album_table",
+         sql = "sql/create_album_table.sql",
+         snowflake_conn_id = "snowflake_default"
+    )
+
+    task03 = SnowflakeOperator(
+         task_id = "create_track_table",
+         sql = "sql/create_track_table.sql",
+         snowflake_conn_id = "snowflake_default"
+    )
 
     task1 = launch_browser_to_get_code()
     task2 = get_token(code = task1)
     task3 = get_history(token = task2)
     task4 = json_to_pandas(json_data = task3)
     task5 = split_pandas_df(pandas_df = task4)
+    task6 = artist_data_to_snowflake(artist_data_df = task5["artist_data"])
 
+    task01 >> task02 >> task03 >> task1 >> task2 >> task3 >> task4 >> task5
 
 pipeline()
         
