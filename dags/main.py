@@ -165,8 +165,8 @@ def pipeline():
     def split_pandas_df(pandas_df):
          # The purpose of this function is to split the single pandas dataframe to 3 dataframes. One for song data, one for album data, and one for artist data.
 
-        df_songs = pandas_df[["played_at", "artist", "track", "track_len_s"]]
-        df_albums = pandas_df[["album", "album_release_date", "album_total_tracks"]]
+        df_songs = pandas_df[["played_at", "track", "track_len_s", "album"]]
+        df_albums = pandas_df[["album", "album_release_date", "album_total_tracks", "artist"]]
         df_artists = pandas_df[["artist"]]
 
         # assigning the created tables to a dictionary to they can be accessed using the key.
@@ -200,6 +200,40 @@ def pipeline():
                 engine.execute(insert_query)
 
         return None
+    
+    @task
+    def album_data_to_snowflake(album_data_df):
+        # This functions adds the album data to the snowflake table if they dont already exist there.
+        snowflake_hook = SnowflakeHook(snowflake_conn_id = "snowflake_default")
+        connection = snowflake_hook.get_uri()
+        engine = create_engine(connection)
+
+        # We will iterate over the the rows and check if the album is already in the table.
+        for i, r in album_data_df.iterrows():
+            album = r["album"]
+            select_query = f"SELECT * FROM album_table WHERE album = '{album}'"
+            result = engine.execute(select_query)
+            rows = result.fetchall()
+
+            # if the album is not in the table, we will insert it.
+            if not rows:
+                artist = r["artist"]
+                album_release_date = r["album_release_date"]
+                album_total_tracks = r["album_total_tracks"]
+
+                # we dont want to add the artist name to the table since the artist table already contains that information
+                # instead we are going to retrieve the artist_id from the artist table and insert it as a foreign key to the album table.
+                # fetching the artist id
+                select_query = f"SELECT artist_id FROM artist_table WHERE artist = '{artist}'"
+                result = engine.execute(select_query)
+                artist_id = result.scalar()
+
+                # inserting data to the table.
+                insert_query = f"INSERT INTO album_table (artist_id, album, album_release_date, album_total_tracks) VALUES ('{artist_id}', '{album}', '{album_release_date}', '{album_total_tracks}')"
+                engine.execute(insert_query)
+
+        return None
+
 
     # Actual tasks start from this point.
 
@@ -227,8 +261,9 @@ def pipeline():
     task4 = json_to_pandas(json_data = task3)
     task5 = split_pandas_df(pandas_df = task4)
     task6 = artist_data_to_snowflake(artist_data_df = task5["artist_data"])
+    task7 = album_data_to_snowflake(album_data_df = task5["album_data"])
 
-    task01 >> task02 >> task03 >> task1 >> task2 >> task3 >> task4 >> task5
+    task01 >> task02 >> task03 >> task1 >> task2 >> task3 >> task4 >> task5 >> task6 >> task7
 
 pipeline()
         
