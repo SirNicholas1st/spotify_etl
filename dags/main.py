@@ -141,7 +141,9 @@ def pipeline():
         }
 
         for song_data in json_data["items"]:
-            played_at = datetime.strptime(song_data["played_at"],"%Y-%m-%dT%H:%M:%S.%fZ")
+            # removing the Z from the timestamp.
+            played_at =song_data["played_at"].replace("Z", "")
+            played_at = datetime.strptime(played_at,"%Y-%m-%dT%H:%M:%S.%f")
             artist = song_data["track"]["artists"][0]["name"]
             track = song_data["track"]["name"]
             track_len_s = round((song_data["track"]["duration_ms"] / 1000), 2)
@@ -190,6 +192,8 @@ def pipeline():
         for i, r in artist_data_df.iterrows():
             # check if the artist in question is already in the table. We dont want duplicates.
             artist = r["artist"]
+            # Doubling the apostrophes, without this the sql will raise an error
+            artist = artist.replace("'", "''")
             select_query = f"SELECT artist_id FROM artist_table WHERE artist = '{artist}'"
             result = engine.execute(select_query)
             rows = result.fetchall()
@@ -211,6 +215,8 @@ def pipeline():
         # We will iterate over the the rows and check if the album is already in the table.
         for i, r in album_data_df.iterrows():
             album = r["album"]
+            # Doubling the apostrophes, without this the sql will raise an error
+            album = album.replace("'", "''")
             select_query = f"SELECT * FROM album_table WHERE album = '{album}'"
             result = engine.execute(select_query)
             rows = result.fetchall()
@@ -230,6 +236,43 @@ def pipeline():
 
                 # inserting data to the table.
                 insert_query = f"INSERT INTO album_table (artist_id, album, album_release_date, album_total_tracks) VALUES ('{artist_id}', '{album}', '{album_release_date}', '{album_total_tracks}')"
+                engine.execute(insert_query)
+
+        return None
+    
+
+    @task
+    def track_data_to_snowflake(track_data_df):
+        # This functions adds the track data to the snowflake.
+        # create a engine which carries out the sql statements.
+        snowflake_hook = SnowflakeHook(snowflake_conn_id = "snowflake_default")
+        connection = snowflake_hook.get_uri()
+        engine = create_engine(connection)
+
+        for i, r in track_data_df.iterrows():
+
+            played_at = r["played_at"]
+
+            # we will check that there isnt already a track with the same timestamp on the table
+            # this part is only needed for testing purposes, since the DAG is designed to retrieve only the songs listened during previous day and the DAG runs 1 per day
+            
+            select_query = f"SELECT * FROM track_table WHERE played_at = '{played_at}'"
+            result = engine.execute(select_query)
+            rows = result.fetchall()
+
+            if not rows:
+                
+                track = r["track"].replace("'", "''")
+                track_len_s = r["track_len_s"]
+                album = r["album"].replace("'", "''")
+
+                # fetching the album_id (foreign key)
+                select_query = f"SELECT album_id FROM album_table WHERE album = '{album}'"
+                result = engine.execute(select_query)
+                album_id = result.scalar()
+
+                # inserting the rows
+                insert_query = f"INSERT INTO track_table (album_id, played_at, track, track_len_s) VALUES ('{album_id}', '{played_at}', '{track}', '{track_len_s}')"
                 engine.execute(insert_query)
 
         return None
@@ -262,8 +305,9 @@ def pipeline():
     task5 = split_pandas_df(pandas_df = task4)
     task6 = artist_data_to_snowflake(artist_data_df = task5["artist_data"])
     task7 = album_data_to_snowflake(album_data_df = task5["album_data"])
+    task8 = track_data_to_snowflake(track_data_df = task5["song_data"])
 
-    task01 >> task02 >> task03 >> task1 >> task2 >> task3 >> task4 >> task5 >> task6 >> task7
+    task01 >> task02 >> task03 >> task1 >> task2 >> task3 >> task4 >> task5 >> task6 >> task7 >> task8
 
 pipeline()
         
